@@ -7,7 +7,6 @@ from PIL import Image
 from torchvision import models, transforms
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
-from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
 st.set_page_config(page_title="Fetal GA Estimator")
 st.title("Fetal Gestational Age Estimation from 2D Ultrasound")
@@ -34,6 +33,19 @@ tf = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
+
+class SignedTarget:
+    """Grad-CAM target for a single regression output.
+    For ages below the training average the output is negative, so we flip
+    the sign. Otherwise the heatmap can come out almost empty."""
+
+    def __init__(self, sign):
+        self.sign = sign
+
+    def __call__(self, model_output):
+        return self.sign * model_output[:, 0]
+
+
 file = st.file_uploader(
     "Upload a fetal head ultrasound image (PNG or JPG)",
     type=["png", "jpg", "jpeg"],
@@ -45,8 +57,11 @@ if file:
 
     # Grad-CAM (dropout off)
     model.eval()
+    with torch.no_grad():
+        base_out = model(x).item()
+    sign = 1 if base_out >= 0 else -1
     with GradCAM(model=model, target_layers=[model.layer4[-1]]) as cam:
-        heat = cam(input_tensor=x, targets=[ClassifierOutputTarget(0)])[0]
+        heat = cam(input_tensor=x, targets=[SignedTarget(sign)])[0]
     rgb = np.array(img).astype(np.float32) / 255.0
     overlay = show_cam_on_image(rgb, heat, use_rgb=True)
 
@@ -79,4 +94,7 @@ if file:
             "reviewed by an expert."
         )
     else:
-        st.success("Uncertainty is low for this image.")
+        st.success(
+            "Uncertainty is relatively low compared with the test images. "
+            "The interval above still shows the expected error."
+        )
